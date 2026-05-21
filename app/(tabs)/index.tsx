@@ -1,0 +1,436 @@
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, RefreshControl } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { useState, useEffect } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
+import React from 'react';
+
+// Components
+import Header from '@/components/index/Header';
+import LightStatus from '@/components/index/LightStatus';
+import ControlButtons from '@/components/index/ControlButtons';
+//import VoiceRecognitionButton from '@/components/index/VoiceRecognitionButton';
+// import RealVoiceRecognitionButton from '@/components/index/RealVoiceRecognitionButton';
+import SimpleVoiceRecorder from '@/components/index/SimpleVoiceRecorder';
+import MockToggle from '@/components/index/MockToggle';
+import ErrorBanner from '@/components/index/ErrorBanner';
+import ConnectionStatusBar from '@/components/index/ConnectionStatusBar';
+import EmptyState from '@/components/index/EmptyState';
+
+// Services
+import { 
+  turnLightOn, 
+  turnLightOff, 
+  getLightStatus,
+  setAutoMode, 
+  sendVoiceCommand,
+  testConnection 
+} from '@/services/api';
+
+// Hooks
+import { useApi } from '@/hooks/useApi';
+
+// Constants
+import { CONFIG } from '@/constants/config';
+
+const USE_MOCK_DATA = false;
+
+export default function HomePage() {
+  const [refreshing, setRefreshing] = useState(false);
+  const [lightStatus, setLightStatus] = useState('off');
+  const [mode, setMode] = useState('auto');
+  const [lastUpdated, setLastUpdated] = useState(new Date());
+  const [useMock, setUseMock] = useState(USE_MOCK_DATA);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [backendUrl, setBackendUrl] = useState('http://192.168.1.100:5000');
+
+  // Test connection to backend when app starts
+  useEffect(() => {
+    const checkConnection = async () => {
+      if (useMock) {
+        console.log('🎭 Mock Mode: Connection check - Mock mode active, setting connected=true');
+        setIsConnected(true);
+        setErrorMessage(null);
+        return;
+      }
+      
+      console.log('🌐 Real Mode: Testing connection to backend at', backendUrl);
+      const connected = await testConnection(backendUrl);
+      console.log('📡 Connection test result:', connected ? 'CONNECTED' : 'DISCONNECTED');
+      setIsConnected(connected);
+      if (connected) {
+        fetchStatus();
+        setErrorMessage(null);
+      } else {
+        setErrorMessage('Cannot connect to backend. Please check settings.');
+      }
+    };
+    checkConnection();
+  }, [useMock, backendUrl]);
+
+
+
+  useEffect(() => {
+    const loadConfig = async () => {
+      try {
+        const savedUrl = await AsyncStorage.getItem('backendUrl');
+        if (savedUrl) {
+          setBackendUrl(savedUrl);
+        }
+      } catch (error) {
+        // Silent fail - keep default URL
+      }
+    };
+    loadConfig();
+  }, []);
+
+  // Reload config when screen comes into focus (after returning from Settings)
+  useFocusEffect(
+    React.useCallback(() => {
+      const reloadConfig = async () => {
+        try {
+          const savedUrl = await AsyncStorage.getItem('backendUrl');
+          if (savedUrl && savedUrl !== backendUrl) {
+            setBackendUrl(savedUrl);
+            // Re-check connection with new URL
+            if (!useMock) {
+              const connected = await testConnection(savedUrl);
+              setIsConnected(connected);
+              if (connected) {
+                setErrorMessage(null);
+                fetchStatus();
+              } else {
+                setErrorMessage('Cannot connect to backend. Check settings.');
+              }
+            }
+          }
+        } catch (error) {
+          // Silent fail
+        }
+      };
+      reloadConfig();
+    }, [backendUrl, useMock])
+  );
+
+
+  // Re-check connection when backendUrl changes
+  useEffect(() => {
+    if (useMock) return;
+    
+    const checkConnection = async () => {
+      const connected = await testConnection(backendUrl);
+      setIsConnected(connected);
+      if (!connected) {
+        setErrorMessage('Cannot connect to backend. Check settings.');
+      } else {
+        setErrorMessage(null);
+        fetchStatus();
+      }
+    };
+    
+    checkConnection();
+  }, [backendUrl]);
+
+  // MOCK MOTION SIMULATION - COMMENT THIS ENTIRE BLOCK WHEN BACKEND IS READY
+  useEffect(() => {
+    if (!useMock) return;
+    if (mode !== 'auto') return;
+  
+    const interval = setInterval(() => {
+      const motionDetected = Math.random() > 0.7;
+      
+      if (motionDetected && mode === 'auto') {
+        setLightStatus('on');
+        setTimeout(() => {
+          if (mode === 'auto') {
+            setLightStatus('off');
+          }
+        }, 3000);
+      }
+      setLastUpdated(new Date());
+    }, 5000);
+  
+    return () => clearInterval(interval);
+  }, [mode, useMock]);
+
+  // ❌ REMOVED: Automatic polling - requests only sent on user action now
+
+  // API hook for loading and error management
+  const { isLoading: apiLoading, execute } = useApi({
+    onError: (err) => {
+      console.log('❌ useApi Error Handler:', err.message);
+      // Show user-friendly error message
+      if (err.message.includes('Failed to fetch') || err.message.includes('Network request failed')) {
+        setErrorMessage('Cannot reach the backend server. Please check if it is running.');
+      } else if (err.message.includes('HTTP error')) {
+        setErrorMessage('Backend server error. Please try again later.');
+      } else {
+        setErrorMessage(`Error: ${err.message}`);
+      }
+    },
+  });
+
+
+  const fetchStatus = async () => {
+    // MOCK BLOCK - Skip real API call when using mock
+    if (useMock) {
+      setLastUpdated(new Date());
+      return;
+    }
+    // END MOCK BLOCK
+    
+    try {
+      const response = await getLightStatus(backendUrl);
+      setLightStatus(response.status);
+      setMode(response.mode);
+      setLastUpdated(new Date());
+      setErrorMessage(null);
+    } catch (error) {
+      setIsConnected(false);
+    }
+  };
+
+  const handleTurnLightOn = async () => {
+    console.log('🖱️ User Action: Turn Light On button pressed');
+    if (apiLoading) return;
+    
+    setErrorMessage(null);
+    
+    if (useMock) {
+      console.log('🎭 Mock Mode: Simulating turn light on');
+      setTimeout(() => {
+        setLightStatus('on');
+        setMode('manual');
+        setLastUpdated(new Date());
+        console.log('✅ Mock: Light turned on');
+      }, CONFIG.MOCK_DELAY_MS);
+      return;
+    }
+    
+    console.log('🌐 Real Mode: Calling API turnLightOn');
+    const result = await execute(() => turnLightOn(backendUrl));
+    if (result) {
+      console.log('✅ API: Light turned on successfully', result);
+      setLightStatus(result.status as 'on' | 'off');
+      setMode(result.mode as 'auto' | 'manual');
+      setLastUpdated(new Date());
+    }
+  };
+
+  const handleTurnLightOff = async () => {
+    console.log('🖱️ User Action: Turn Light Off button pressed');
+    if (apiLoading) return;
+    
+    setErrorMessage(null);
+    
+    if (useMock) {
+      console.log('🎭 Mock Mode: Simulating turn light off');
+      setTimeout(() => {
+        setLightStatus('off');
+        setMode('manual');
+        setLastUpdated(new Date());
+        console.log('✅ Mock: Light turned off');
+      }, CONFIG.MOCK_DELAY_MS);
+      return;
+    }
+    
+    console.log('🌐 Real Mode: Calling API turnLightOff');
+    const result = await execute(() => turnLightOff(backendUrl));
+    if (result) {
+      console.log('✅ API: Light turned off successfully', result);
+      setLightStatus(result.status as 'on' | 'off');
+      setMode(result.mode as 'auto' | 'manual');
+      setLastUpdated(new Date());
+    }
+  };
+
+  const handleSetAutoMode = async () => {
+    console.log('🖱️ User Action: Auto Mode button pressed');
+    if (apiLoading) return;
+    
+    setErrorMessage(null);
+    
+    if (useMock) {
+      console.log('🎭 Mock Mode: Simulating auto mode');
+      setTimeout(() => {
+        setMode('auto');
+        setLastUpdated(new Date());
+        console.log('✅ Mock: Auto mode activated');
+      }, CONFIG.MOCK_DELAY_MS);
+      return;
+    }
+    
+    console.log('🌐 Real Mode: Calling API setAutoMode');
+    const result = await execute(() => setAutoMode(backendUrl));
+    if (result) {
+      console.log('✅ API: Auto mode activated successfully', result);
+      setLightStatus(result.status as 'on' | 'off');
+      setMode(result.mode as 'auto' | 'manual');
+      setLastUpdated(new Date());
+    }
+  };
+  
+  const handleVoiceCommand = async (commandText: string) => {
+    // Normalize the command to what backend expects
+    let normalizedCommand = commandText.toLowerCase().trim();
+    
+    // Map various phrases to valid commands
+    if (normalizedCommand.includes('turn on') || 
+        normalizedCommand.includes('light on') || 
+        normalizedCommand === 'on' ||
+        normalizedCommand.includes('switch on')) {
+      normalizedCommand = 'light on';
+    } 
+    else if (normalizedCommand.includes('turn off') || 
+             normalizedCommand.includes('light off') || 
+             normalizedCommand === 'off' ||
+             normalizedCommand.includes('switch off')) {
+      normalizedCommand = 'light off';
+    }
+    else if (normalizedCommand.includes('auto') || 
+             normalizedCommand.includes('automatic')) {
+      normalizedCommand = 'auto mode';
+    }
+    
+    console.log('🎤 Original command:', commandText);
+    console.log('🎤 Normalized command:', normalizedCommand);
+    
+    if (apiLoading) return;
+    
+    setErrorMessage(null);
+    
+    if (useMock) {
+      setTimeout(() => {
+        const lowerCommand = normalizedCommand.toLowerCase();
+        if (lowerCommand.includes('light on')) {
+          setLightStatus('on');
+          setMode('manual');
+        } else if (lowerCommand.includes('light off')) {
+          setLightStatus('off');
+          setMode('manual');
+        } else if (lowerCommand.includes('auto mode')) {
+          setMode('auto');
+        }
+        setLastUpdated(new Date());
+      }, CONFIG.MOCK_DELAY_MS);
+      return;
+    }
+    
+    const result = await execute(() => sendVoiceCommand(normalizedCommand, backendUrl));
+    if (result) {
+      setLightStatus(result.status as 'on' | 'off');
+      setMode(result.mode as 'auto' | 'manual');
+      setLastUpdated(new Date());
+    }
+  };
+
+  
+  const onRefresh = async () => {
+  setRefreshing(true);
+  if (useMock) {
+    setLastUpdated(new Date());
+  } else if (isConnected) {
+    await fetchStatus();
+  }
+  setRefreshing(false);
+ };
+
+  return (
+    <View style={styles.container}>
+      <StatusBar style="light" />
+      
+      <ScrollView 
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl 
+            refreshing={refreshing} 
+            onRefresh={onRefresh}
+            tintColor="#3b82f6"
+            colors={['#3b82f6']}
+          />
+        }
+      >
+        <Header/>
+
+        {/* Show empty state only when not connected and not in mock mode */}
+        {!isConnected && !useMock && (
+          <EmptyState onRetry={() => {
+            testConnection(backendUrl).then(setIsConnected);
+          }} />
+        )}
+
+        {/* Always show error banner if there is an error */}
+        <ErrorBanner errorMessage={errorMessage} />
+
+        {/* Show main controls only when connected or in mock mode */}
+        {(isConnected || useMock) && (
+          <>
+            <LightStatus lightStatus={lightStatus} mode={mode} />
+            <ControlButtons 
+              onTurnLightOn={handleTurnLightOn}
+              onTurnLightOff={handleTurnLightOff}
+              onSetAutoMode={handleSetAutoMode}
+              isLoading={apiLoading}
+              isConnected={isConnected}
+            />
+            <SimpleVoiceRecorder 
+            onCommand={handleVoiceCommand}
+            isProcessing={apiLoading}
+          />
+            <ConnectionStatusBar isConnected={isConnected} lastUpdated={lastUpdated} />
+          </>
+        )}
+
+        {/* MockToggle - Always visible, placed outside the conditional */}
+        <MockToggle 
+          useMock={useMock} 
+          onToggle={async () => {
+            const newMockValue = !useMock;
+            setUseMock(newMockValue);
+            setErrorMessage(null);
+            await AsyncStorage.setItem('useMock', String(newMockValue));
+            if (newMockValue) {
+              // When turning mock mode ON, set connected to true
+              setIsConnected(true);
+            } else {
+              // When turning mock mode OFF, check real connection
+              const connected = await testConnection(backendUrl);
+              setIsConnected(connected);
+              if (!connected) {
+                setErrorMessage('Cannot connect to backend. Check settings or turn on Mock Mode.');
+              }
+            }
+          }} 
+        />
+      </ScrollView>
+
+      {apiLoading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#3b82f6" />
+        </View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0f172a',
+  },
+  scrollContent: {
+    paddingBottom: 40,
+  },
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0f172a80',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});
